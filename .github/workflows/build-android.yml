@@ -46,6 +46,12 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install buildozer==1.5.0 cython==0.29.36
 
+      - name: Remove unused lxml dependency
+        working-directory: project/iran_stock_android
+        run: |
+          sed -i 's/,lxml//g' buildozer.spec
+          grep '^requirements' buildozer.spec
+
       - name: Build APK
         working-directory: project/iran_stock_android
         run: buildozer android debug
