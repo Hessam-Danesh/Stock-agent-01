@@ -10,7 +10,7 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-22.04
-    timeout-minutes: 120
+    timeout-minutes: 180
 
     steps:
       - name: Check out repository
@@ -46,6 +46,81 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install buildozer==1.5.0 cython==0.29.36
 
+      - name: Create compatible NumPy recipe
+        working-directory: project/iran_stock_android
+        run: |
+          mkdir -p p4a-recipes/numpy
+
+          cat > p4a-recipes/numpy/__init__.py <<'PY'
+          from pythonforandroid.recipe import Recipe, MesonRecipe
+          from os.path import join
+          import shutil
+
+          class NumpyRecipe(MesonRecipe):
+              version = "v2.3.3"
+              url = "git+https://github.com/numpy/numpy"
+              extra_build_args = [
+                  "-Csetup-args=-Dblas=none",
+                  "-Csetup-args=-Dlapack=none"
+              ]
+              opt_depends = ["libopenblas"]
+              need_stl_shared = True
+              min_ndk_api_support = 24
+
+              def get_include(self, arch):
+                  return join(
+                      self.ctx.get_python_install_dir(arch.arch),
+                      "numpy/_core/include",
+                  )
+
+              def get_recipe_meson_options(self, arch):
+                  options = super().get_recipe_meson_options(arch)
+                  options["properties"]["longdouble_format"] = (
+                      "IEEE_DOUBLE_LE"
+                      if arch.arch in ["armeabi-v7a", "x86"]
+                      else "IEEE_QUAD_LE"
+                  )
+                  return options
+
+              def get_recipe_env(self, arch, **kwargs):
+                  env = super().get_recipe_env(arch, **kwargs)
+                  env["_PYTHON_HOST_PLATFORM"] = arch.command_prefix
+                  env["NPY_DISABLE_SVML"] = "1"
+
+                  env["TARGET_PYTHON_EXE"] = join(
+                      Recipe.get_recipe("python3", self.ctx)
+                      .get_build_dir(arch.arch),
+                      "android-build",
+                      "python",
+                  )
+
+                  blas_dir = join(
+                      Recipe.get_recipe("libopenblas", self.ctx)
+                      .get_build_dir(arch.arch),
+                      "build",
+                  )
+
+                  env["CXXFLAGS"] += (
+                      f" -I{blas_dir} -L{join(blas_dir, 'lib')}"
+                  )
+
+                  if "libopenblas" in self.ctx.recipe_build_order:
+                      self.extra_build_args = [
+                          "-Csetup-args=-Dblas=auto",
+                          "-Csetup-args=-Dlapack=auto",
+                          "-Csetup-args=-Dallow-noblas=False",
+                      ]
+
+                  return env
+
+              def get_hostrecipe_env(self, arch=None):
+                  env = super().get_hostrecipe_env(arch=arch)
+                  env["RANLIB"] = shutil.which("ranlib")
+                  return env
+
+          recipe = NumpyRecipe()
+          PY
+
       - name: Create compatible Pandas recipe
         working-directory: project/iran_stock_android
         run: |
@@ -56,26 +131,32 @@ jobs:
           from pythonforandroid.recipe import MesonRecipe
 
           class PandasRecipe(MesonRecipe):
-              version = 'v2.3.0'
-              url = 'git+https://github.com/pandas-dev/pandas'
-              depends = ['numpy', 'libbz2', 'liblzma']
+              version = "v2.3.3"
+              url = "git+https://github.com/pandas-dev/pandas"
+              depends = ["numpy", "libbz2", "liblzma"]
+
               hostpython_prerequisites = [
                   "versioneer[toml]",
-                  "numpy==2.3.0",
+                  "numpy==2.3.3",
                   "Cython<4.0.0a0"
               ]
-              patches = ['fix_numpy_includes.patch']
-              python_depends = ['python-dateutil', 'pytz']
+
+              patches = ["fix_numpy_includes.patch"]
+              python_depends = ["python-dateutil", "pytz"]
               need_stl_shared = True
 
               def get_recipe_env(self, arch, **kwargs):
                   env = super().get_recipe_env(arch, **kwargs)
-                  env['NUMPY_INCLUDES'] = join(
+                  env["NUMPY_INCLUDES"] = join(
                       self.ctx.get_python_install_dir(arch.arch),
                       "numpy/_core/include",
                   )
-                  env["PYTHON_INCLUDE_DIR"] = self.ctx.python_recipe.include_root(arch)
-                  env['LDFLAGS'] += f' -landroid -l{self.stl_lib_name}'
+                  env["PYTHON_INCLUDE_DIR"] = (
+                      self.ctx.python_recipe.include_root(arch)
+                  )
+                  env["LDFLAGS"] += (
+                      f" -landroid -l{self.stl_lib_name}"
+                  )
                   return env
 
               def build_arch(self, arch):
@@ -104,12 +185,18 @@ jobs:
 
           sed -i 's/,lxml//g' buildozer.spec
 
-          echo "Custom Pandas recipe:"
+          echo "Custom recipes:"
           grep -n "p4a.local_recipes" buildozer.spec
+          grep -n "version =" p4a-recipes/numpy/__init__.py
+          grep -n "version =" p4a-recipes/pandas/__init__.py
 
       - name: Build APK
         working-directory: project/iran_stock_android
-        run: buildozer android debug
+        run: |
+          echo "numpy==2.3.3" > "$RUNNER_TEMP/pip-constraints.txt"
+          export PIP_CONSTRAINT="$RUNNER_TEMP/pip-constraints.txt"
+
+          buildozer android debug
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
