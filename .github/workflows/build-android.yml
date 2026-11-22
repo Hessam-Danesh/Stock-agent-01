@@ -109,6 +109,11 @@ jobs:
           recipe = NumpyRecipe()
           PY
 
+      - name: Upgrade Kivy for Python 3.14
+        working-directory: project/iran_stock_android
+        run: |
+          sed -i 's/kivy==2.3.0/kivy==2.3.2/g' buildozer.spec
+          grep '^requirements' buildozer.spec
       - name: Create compatible Pandas recipe
         working-directory: project/iran_stock_android
         run: |
