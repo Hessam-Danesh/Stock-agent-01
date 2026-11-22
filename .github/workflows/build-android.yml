@@ -41,16 +41,71 @@ jobs:
             git zip unzip autoconf automake autopoint gettext \
             libtool libtool-bin pkg-config \
             zlib1g-dev libncurses5-dev libncursesw5-dev \
-            libtinfo6 cmake libffi-dev libssl-dev
+            libtinfo6 cmake libffi-dev libssl-dev curl
 
           python -m pip install --upgrade pip
           python -m pip install buildozer==1.5.0 cython==0.29.36
 
-      - name: Remove unused lxml dependency
+      - name: Create compatible Pandas recipe
         working-directory: project/iran_stock_android
         run: |
+          mkdir -p p4a-recipes/pandas
+
+          cat > p4a-recipes/pandas/__init__.py <<'PY'
+          from os.path import join
+          from pythonforandroid.recipe import MesonRecipe
+
+          class PandasRecipe(MesonRecipe):
+              version = 'v2.3.0'
+              url = 'git+https://github.com/pandas-dev/pandas'
+              depends = ['numpy', 'libbz2', 'liblzma']
+              hostpython_prerequisites = [
+                  "versioneer[toml]",
+                  "numpy==2.3.0",
+                  "Cython<4.0.0a0"
+              ]
+              patches = ['fix_numpy_includes.patch']
+              python_depends = ['python-dateutil', 'pytz']
+              need_stl_shared = True
+
+              def get_recipe_env(self, arch, **kwargs):
+                  env = super().get_recipe_env(arch, **kwargs)
+                  env['NUMPY_INCLUDES'] = join(
+                      self.ctx.get_python_install_dir(arch.arch),
+                      "numpy/_core/include",
+                  )
+                  env["PYTHON_INCLUDE_DIR"] = self.ctx.python_recipe.include_root(arch)
+                  env['LDFLAGS'] += f' -landroid -l{self.stl_lib_name}'
+                  return env
+
+              def build_arch(self, arch):
+                  super().build_arch(arch)
+                  self.restore_hostpython_prerequisites(["cython"])
+
+          recipe = PandasRecipe()
+          PY
+
+          curl -L --fail \
+            https://raw.githubusercontent.com/kivy/python-for-android/develop/pythonforandroid/recipes/pandas/fix_numpy_includes.patch \
+            -o p4a-recipes/pandas/fix_numpy_includes.patch
+
+          python - <<'PY'
+          from pathlib import Path
+          p = Path("buildozer.spec")
+          s = p.read_text()
+          if "p4a.local_recipes" not in s:
+              s = s.replace(
+                  "[app]",
+                  "[app]\np4a.local_recipes = p4a-recipes",
+                  1
+              )
+          p.write_text(s)
+          PY
+
           sed -i 's/,lxml//g' buildozer.spec
-          grep '^requirements' buildozer.spec
+
+          echo "Custom Pandas recipe:"
+          grep -n "p4a.local_recipes" buildozer.spec
 
       - name: Build APK
         working-directory: project/iran_stock_android
