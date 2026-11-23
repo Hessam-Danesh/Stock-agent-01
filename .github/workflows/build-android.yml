@@ -197,7 +197,33 @@ jobs:
 
           echo "Pandas constraints:"
           cat p4a-recipes/pandas/build-constraints.txt
+      - name: Set python-for-android branch
+        working-directory: project/iran_stock_android
+        run: |
+          python - <<'PY'
+          from pathlib import Path
 
+          p = Path("buildozer.spec")
+          s = p.read_text()
+
+          if "p4a.branch" in s:
+              import re
+              s = re.sub(
+                  r"(?m)^p4a\.branch\s*=.*$",
+                  "p4a.branch = develop",
+                  s
+              )
+          else:
+              s = s.replace(
+                  "[app]",
+                  "[app]\np4a.branch = develop",
+                  1
+              )
+
+          p.write_text(s)
+          PY
+
+          grep '^p4a.branch' buildozer.spec
       - name: Build APK
         working-directory: project/iran_stock_android
         run: |
