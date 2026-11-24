@@ -29,7 +29,10 @@ jobs:
 
       - name: Reassemble project archive
         run: |
-          cat iran_stock_agent_android_v029_part1.bin iran_stock_agent_android_v029_part2.bin > project.zip
+          cat iran_stock_agent_android_v029_part1_three.bin \
+          iran_stock_agent_android_v029_part2_three.bin \
+          iran_stock_agent_android_v029_part3_three.bin > project.zip
+
           unzip -t project.zip
           mkdir project
           unzip -q project.zip -d project
