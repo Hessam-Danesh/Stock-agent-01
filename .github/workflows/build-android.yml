@@ -28,214 +28,113 @@ jobs:
           python-version: '3.11'
 
       - name: Reassemble project archive
+        shell: bash
         run: |
-          cat iran_stock_agent_android_v029_part1_three.bin \
-          iran_stock_agent_android_v029_part2_three.bin \
-          iran_stock_agent_android_v029_part3_three.bin > project.zip
+          set -e
+
+          test -f iran_stock_agent_android_v029_part1_three.bin
+          test -f iran_stock_agent_android_v029_part2_three.bin
+          test -f iran_stock_agent_android_v029_part3_three.bin
+
+          cat \
+            iran_stock_agent_android_v029_part1_three.bin \
+            iran_stock_agent_android_v029_part2_three.bin \
+            iran_stock_agent_android_v029_part3_three.bin \
+            > project.zip
 
           unzip -t project.zip
-          mkdir project
+
+          mkdir -p project
           unzip -q project.zip -d project
+
+          echo "Archive extracted successfully."
+          echo "Project files:"
+          ls -la project
+
+          test -f project/buildozer.spec
+          test -f project/main.py
 
       - name: Install build dependencies
         run: |
           sudo apt-get update
+
           sudo apt-get install -y \
-            git zip unzip autoconf automake autopoint gettext \
-            libtool libtool-bin pkg-config \
-            zlib1g-dev libncurses5-dev libncursesw5-dev \
-            libtinfo6 cmake libffi-dev libssl-dev curl
+            git \
+            zip \
+            unzip \
+            autoconf \
+            libtool \
+            pkg-config \
+            zlib1g-dev \
+            libncurses5-dev \
+            libncursesw5-dev \
+            libtinfo6 \
+            cmake \
+            libffi-dev \
+            libssl-dev \
+            build-essential \
+            libltdl-dev
 
-          python -m pip install --upgrade pip
-          python -m pip install buildozer==1.5.0 cython==0.29.36
+          python -m pip install --upgrade pip setuptools wheel
 
-      - name: Create NumPy constraints
+          python -m pip install \
+            buildozer==1.5.0 \
+            cython==0.29.36
+
+      - name: Verify Android project structure
+        working-directory: project
         run: |
-          mkdir -p project/iran_stock_android/p4a-recipes/pandas
-          echo "numpy==2.3.3" > project/iran_stock_android/p4a-recipes/pandas/build-constraints.txt
+          set -e
 
-      - name: Create compatible NumPy recipe
-        working-directory: project/iran_stock_android
+          echo "Checking Buildozer configuration..."
+
+          test -f buildozer.spec
+          test -f main.py
+          test -d assets
+
+          echo "Buildozer configuration found."
+          echo "Current requirements:"
+          grep -n '^requirements' buildozer.spec || true
+
+      - name: Upgrade Kivy
+        working-directory: project
+        shell: bash
         run: |
-          mkdir -p p4a-recipes/numpy
+          set -e
 
-          cat > p4a-recipes/numpy/__init__.py <<'PY'
-          from pythonforandroid.recipe import Recipe, MesonRecipe
-          from os.path import join
-          import shutil
+          if grep -q 'kivy==2.3.0' buildozer.spec; then
+            sed -i 's/kivy==2.3.0/kivy==2.3.2/g' buildozer.spec
+          fi
 
-          class NumpyRecipe(MesonRecipe):
-              version = "v2.3.3"
-              url = "git+https://github.com/numpy/numpy"
-              extra_build_args = [
-                  "-Csetup-args=-Dblas=none",
-                  "-Csetup-args=-Dlapack=none"
-              ]
-              opt_depends = ["libopenblas"]
-              need_stl_shared = True
-              min_ndk_api_support = 24
-
-              def get_include(self, arch):
-                  return join(
-                      self.ctx.get_python_install_dir(arch.arch),
-                      "numpy/_core/include",
-                  )
-
-              def get_recipe_meson_options(self, arch):
-                  options = super().get_recipe_meson_options(arch)
-                  options["properties"]["longdouble_format"] = (
-                      "IEEE_DOUBLE_LE"
-                      if arch.arch in ["armeabi-v7a", "x86"]
-                      else "IEEE_QUAD_LE"
-                  )
-                  return options
-
-              def get_recipe_env(self, arch, **kwargs):
-                  env = super().get_recipe_env(arch, **kwargs)
-                  env["_PYTHON_HOST_PLATFORM"] = arch.command_prefix
-                  env["NPY_DISABLE_SVML"] = "1"
-
-                  env["TARGET_PYTHON_EXE"] = join(
-                      Recipe.get_recipe("python3", self.ctx)
-                      .get_build_dir(arch.arch),
-                      "android-build",
-                      "python",
-                  )
-
-                  return env
-
-              def get_hostrecipe_env(self, arch=None):
-                  env = super().get_hostrecipe_env(arch=arch)
-                  env["RANLIB"] = shutil.which("ranlib")
-                  return env
-
-          recipe = NumpyRecipe()
-          PY
-
-      - name: Upgrade Kivy for Python 3.14
-        working-directory: project/iran_stock_android
-        run: |
-          sed -i 's/kivy==2.3.0/kivy==2.3.2/g' buildozer.spec
+          echo "Updated requirements:"
           grep '^requirements' buildozer.spec
-      - name: Create compatible Pandas recipe
-        working-directory: project/iran_stock_android
-        run: |
-          mkdir -p p4a-recipes/pandas
 
-          cat > p4a-recipes/pandas/__init__.py <<'PY'
-          from os.path import join
-          from pythonforandroid.recipe import MesonRecipe
-          import os
-
-          class PandasRecipe(MesonRecipe):
-              version = "v2.3.3"
-              url = "git+https://github.com/pandas-dev/pandas"
-              depends = ["numpy", "libbz2", "liblzma"]
-
-              hostpython_prerequisites = [
-                  "versioneer[toml]",
-                  "numpy==2.3.3",
-                  "Cython<4.0.0a0"
-              ]
-
-              patches = ["fix_numpy_includes.patch"]
-              python_depends = ["python-dateutil", "pytz"]
-              need_stl_shared = True
-
-              def get_recipe_env(self, arch, **kwargs):
-                  env = super().get_recipe_env(arch, **kwargs)
-
-                  constraints = join(
-                      os.environ["GITHUB_WORKSPACE"],
-                      "project",
-                      "iran_stock_android",
-                      "p4a-recipes",
-                      "pandas",
-                      "build-constraints.txt"
-                  )
-
-                  env["PIP_CONSTRAINT"] = constraints
-                  env["PIP_BUILD_CONSTRAINT"] = constraints
-
-                  env["NUMPY_INCLUDES"] = join(
-                      self.ctx.get_python_install_dir(arch.arch),
-                      "numpy/_core/include",
-                  )
-
-                  env["PYTHON_INCLUDE_DIR"] = (
-                      self.ctx.python_recipe.include_root(arch)
-                  )
-
-                  env["LDFLAGS"] += (
-                      f" -landroid -l{self.stl_lib_name}"
-                  )
-
-                  return env
-
-              def build_arch(self, arch):
-                  super().build_arch(arch)
-                  self.restore_hostpython_prerequisites(["cython"])
-
-          recipe = PandasRecipe()
-          PY
-
-          curl -L --fail \
-            https://raw.githubusercontent.com/kivy/python-for-android/develop/pythonforandroid/recipes/pandas/fix_numpy_includes.patch \
-            -o p4a-recipes/pandas/fix_numpy_includes.patch
-
-          python - <<'PY'
-          from pathlib import Path
-          p = Path("buildozer.spec")
-          s = p.read_text()
-          if "p4a.local_recipes" not in s:
-              s = s.replace(
-                  "[app]",
-                  "[app]\np4a.local_recipes = p4a-recipes",
-                  1
-              )
-          p.write_text(s)
-          PY
-
-          sed -i 's/,lxml//g' buildozer.spec
-
-          echo "Pandas constraints:"
-          cat p4a-recipes/pandas/build-constraints.txt
-      - name: Set python-for-android branch
-        working-directory: project/iran_stock_android
-        run: |
-          python - <<'PY'
-          from pathlib import Path
-
-          p = Path("buildozer.spec")
-          s = p.read_text()
-
-          if "p4a.branch" in s:
-              import re
-              s = re.sub(
-                  r"(?m)^p4a\.branch\s*=.*$",
-                  "p4a.branch = develop",
-                  s
-              )
-          else:
-              s = s.replace(
-                  "[app]",
-                  "[app]\np4a.branch = develop",
-                  1
-              )
-
-          p.write_text(s)
-          PY
-
-          grep '^p4a.branch' buildozer.spec
       - name: Build APK
-        working-directory: project/iran_stock_android
+        working-directory: project
+        env:
+          BUILDOZER_WARN_ON_ROOT: "0"
         run: |
+          set -e
+
           buildozer android debug
+
+      - name: Verify APK
+        shell: bash
+        run: |
+          set -e
+
+          echo "Searching for generated APK..."
+
+          find project/bin -maxdepth 1 -type f -name "*.apk" -print
+
+          test -n "$(find project/bin -maxdepth 1 -type f -name '*.apk' -print -quit)"
+
+          echo "APK successfully generated."
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: iran-stock-agent-apk
-          path: project/iran_stock_android/bin/*.apk
+          path: project/bin/*.apk
           if-no-files-found: error
           retention-days: 14
