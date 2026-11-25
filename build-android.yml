@@ -1,0 +1,124 @@
+name: Build Iran Stock Agent APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/build-android.yml'
+      - 'android_patch/**'
+
+permissions:
+  contents: read
+
+jobs:
+  test-and-build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 180
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Reassemble and verify project archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f iran_stock_agent_android_v029_part1_three.bin
+          test -f iran_stock_agent_android_v029_part2_three.bin
+          test -f iran_stock_agent_android_v029_part3_three.bin
+          cat iran_stock_agent_android_v029_part1_three.bin iran_stock_agent_android_v029_part2_three.bin iran_stock_agent_android_v029_part3_three.bin > project.zip
+          unzip -t project.zip
+          mkdir project
+          unzip -q project.zip -d project
+          test -f project/main.py
+          test -f project/buildozer.spec
+          test -f project/assets/project_scripts.zip
+          test -f project/assets/seed_data.zip
+
+      - name: Apply Android fixes and validate source
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp android_patch/main.py project/main.py
+          rm -rf project/assets/project
+          mkdir -p project/assets/project
+          unzip -q project/assets/project_scripts.zip -d project/assets/project
+          cp android_patch/technical_analysis.py project/assets/project/technical_analysis.py
+          cp android_patch/requirements.txt project/assets/project/requirements.txt
+          rm -f project/assets/project_scripts.zip
+          (cd project/assets/project && zip -q -r ../project_scripts.zip . -i '*.py')
+          sed -i 's/,pandas,numpy//g; s/,lxml//g; s/kivy==2.3.0/kivy==2.3.2/g' project/buildozer.spec
+          grep '^requirements' project/buildozer.spec
+          python -m py_compile project/main.py project/assets/project/*.py
+
+      - name: Unit and offline integration tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m unittest discover -s android_patch/tests -v
+          python - <<'PY'
+          import zipfile, sqlite3, shutil, subprocess, pathlib, tempfile
+          project=pathlib.Path('project')
+          tmp=pathlib.Path(tempfile.mkdtemp(prefix='iran-stock-smoke-'))
+          with zipfile.ZipFile(project/'assets/seed_data.zip') as z:
+              z.extract('database/iran_stock_agent.db', tmp)
+              db=tmp/'database/iran_stock_agent.db'
+          work=tmp/'work'; work.mkdir(); shutil.copy2(db,work/'iran_stock_agent.db')
+          scripts=project/'assets/project'
+          subprocess.run(['python',str(scripts/'technical_analysis.py')],cwd=work,check=True,timeout=240)
+          out=work/'ranking'
+          subprocess.run(['python',str(scripts/'iran_stock_ranking_engine_v0_2_1.py'),'--db',str(work/'iran_stock_agent.db'),'--input',str(work/'codal_extracted'),'--output',str(out)],cwd=work,check=True,timeout=240)
+          csvfile=out/'all_symbols_ranking.csv'
+          assert csvfile.is_file() and csvfile.stat().st_size>1000
+          con=sqlite3.connect(work/'iran_stock_agent.db')
+          assert con.execute('select count(*) from technical_indicators').fetchone()[0] > 1000
+          assert con.execute("select count(*) from technical_indicators where technical_trend in ('BULLISH','BEARISH','NEUTRAL')").fetchone()[0] > 100
+          con.close()
+          print('Offline integration tests passed: technical indicators + ranking CSV generated.')
+          PY
+
+      - name: Install Android build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y git zip unzip autoconf autopoint gettext libtool pkg-config \
+            zlib1g-dev libncurses5-dev libncursesw5-dev libtinfo6 cmake libffi-dev libssl-dev \
+            build-essential libltdl-dev
+          python -m pip install --upgrade pip setuptools wheel
+          python -m pip install buildozer==1.5.0 cython==0.29.36
+
+      - name: Build debug APK
+        working-directory: project
+        env:
+          BUILDOZER_WARN_ON_ROOT: '0'
+        run: |
+          set -euo pipefail
+          buildozer android debug
+
+      - name: Verify APK output
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK=$(find project/bin -maxdepth 1 -type f -name '*.apk' -print -quit)
+          test -n "$APK"
+          test -s "$APK"
+          ls -lh "$APK"
+          sha256sum "$APK"
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: iran-stock-agent-apk-debug
+          path: project/bin/*.apk
+          if-no-files-found: error
+          retention-days: 14
