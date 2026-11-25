@@ -75,7 +75,7 @@ jobs:
               z.extract('database/iran_stock_agent.db', tmp)
               db=tmp/'database/iran_stock_agent.db'
           work=tmp/'work'; work.mkdir(); shutil.copy2(db,work/'iran_stock_agent.db')
-          scripts=project/'assets/project'
+          scripts=(project/'assets/project').resolve()
           subprocess.run(['python',str(scripts/'technical_analysis.py')],cwd=work,check=True,timeout=240)
           out=work/'ranking'
           subprocess.run(['python',str(scripts/'iran_stock_ranking_engine_v0_2_1.py'),'--db',str(work/'iran_stock_agent.db'),'--input',str(work/'codal_extracted'),'--output',str(out)],cwd=work,check=True,timeout=240)
