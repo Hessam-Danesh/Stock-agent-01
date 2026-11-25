@@ -59,7 +59,10 @@ jobs:
           rm -f project/assets/project_scripts.zip
           (cd project/assets/project && zip -q -r ../project_scripts.zip . -i '*.py')
           sed -i 's/,pandas,numpy//g; s/,lxml//g; s/kivy==2.3.0/kivy==2.3.2/g' project/buildozer.spec
+          grep -q 'tzdata' project/buildozer.spec || sed -i '/^requirements = / s/$/,tzdata/' project/buildozer.spec
+          python -c "from zoneinfo import ZoneInfo; print('Asia/Tehran timezone OK:', ZoneInfo('Asia/Tehran'))"
           grep '^requirements' project/buildozer.spec
+
           python -m py_compile project/main.py project/assets/project/*.py
 
       - name: Unit and offline integration tests
