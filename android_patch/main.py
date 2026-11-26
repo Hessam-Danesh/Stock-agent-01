@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """Iran Stock Agent Android UI. Runs the v0.2.12 ranking engine locally; UI release 0.2.12."""
-import csv, os, sys, shutil, zipfile, threading, traceback, runpy, io, contextlib, importlib.util, json, re
+import csv, os, sys, shutil, zipfile, threading, traceback, runpy, io, contextlib, importlib.util, json, re, sqlite3, sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 from functools import partial
@@ -132,16 +132,20 @@ class IranStockApp(App):
         header.add_widget(Label(text=fa("ایجنت بورس ایران - نسخه ۰.۲.۱۲"), bold=True, font_size="18sp", font_name=FONT_NAME))
         root.add_widget(header)
 
-        actions = GridLayout(cols=2, spacing=dp(6), size_hint_y=None, height=dp(92))
-        self.import_btn = Button(text=fa("بازیابی داده اولیه"), font_name=FONT_NAME)
+        actions = GridLayout(cols=4, spacing=dp(4), size_hint_y=None, height=dp(48))
+        self.import_btn = Button(text=fa("بازیابی"), font_name=FONT_NAME, font_size="10sp")
         self.import_btn.bind(on_release=lambda *_: self.confirm_restore())
-        self.update_btn = Button(text=fa("به‌روزرسانی بازار و تحلیل"), font_name=FONT_NAME)
-        self.update_btn.bind(on_release=lambda *_: self.run_async(self.update_market_and_rank))
-        self.codal_btn = Button(text=fa("دریافت گزارش‌های کدال"), font_name=FONT_NAME)
-        self.codal_btn.bind(on_release=lambda *_: self.run_async(self.update_codal))
-        self.rank_btn = Button(text=fa("اجرای رتبه‌بندی"), font_name=FONT_NAME)
-        self.rank_btn.bind(on_release=lambda *_: self.run_async(self.rank))
-        for b in (self.import_btn, self.update_btn, self.codal_btn, self.rank_btn):
+
+        self.update_btn = Button(text=fa("دریافت اطلاعات"), font_name=FONT_NAME, font_size="10sp")
+        self.update_btn.bind(on_release=lambda *_: self.show_info_menu())
+
+        self.rank_btn = Button(text=fa("رتبه‌بندی"), font_name=FONT_NAME, font_size="10sp")
+        self.rank_btn.bind(on_release=lambda *_: self.show_rank_menu())
+
+        self.export_btn = Button(text="Excel", font_name=FONT_NAME, font_size="10sp")
+        self.export_btn.bind(on_release=lambda *_: self.export_excel())
+
+        for b in (self.import_btn, self.update_btn, self.rank_btn, self.export_btn):
             b.disabled = not self.seed_ready
             actions.add_widget(b)
         root.add_widget(actions)
@@ -174,6 +178,159 @@ class IranStockApp(App):
             self.set_status("در حال آماده‌سازی دیتابیس اولیه؛ لطفاً برنامه را باز نگه دارید…")
             Clock.schedule_once(lambda *_: self.run_async(self.restore_seed), 0)
         return root
+
+
+    def show_info_menu(self):
+        box = BoxLayout(orientation="vertical", spacing=dp(6), padding=dp(8))
+        popup = Popup(title=fa("دریافت اطلاعات"), content=box,
+                      size_hint=(.88, .40), title_font=FONT_NAME)
+        options = [
+            ("به‌روزرسانی بازار و تحلیل", self.update_market_and_rank),
+            ("دریافت گزارش‌های کدال", self.update_codal),
+        ]
+        for label, fn in options:
+            b = Button(text=fa(label), font_name=FONT_NAME,
+                       size_hint_y=None, height=dp(48))
+            b.bind(on_release=lambda instance, f=fn: (popup.dismiss(), self.run_async(f)))
+            box.add_widget(b)
+        close = Button(text=fa("بستن"), font_name=FONT_NAME,
+                      size_hint_y=None, height=dp(42))
+        close.bind(on_release=popup.dismiss)
+        box.add_widget(close)
+        popup.open()
+
+    def show_rank_menu(self):
+        box = BoxLayout(orientation="vertical", spacing=dp(5), padding=dp(8))
+        popup = Popup(title=fa("رتبه‌بندی"), content=box,
+                      size_hint=(.90, .65), title_font=FONT_NAME)
+        options = [("اجرای رتبه‌بندی کامل", None)] + [(x, x) for x in SORTS]
+        for label, sort_name in options:
+            b = Button(text=fa(label), font_name=FONT_NAME,
+                      size_hint_y=None, height=dp(46))
+            if sort_name is None:
+                b.bind(on_release=lambda instance: (popup.dismiss(), self.run_async(self.rank)))
+            else:
+                b.bind(on_release=lambda instance, x=sort_name: (popup.dismiss(), self.select_sort(x)))
+            box.add_widget(b)
+        close = Button(text=fa("بستن"), font_name=FONT_NAME,
+                      size_hint_y=None, height=dp(40))
+        close.bind(on_release=popup.dismiss)
+        box.add_widget(close)
+        popup.open()
+
+    def select_sort(self, sort_name):
+        self.sorter.text = fa(sort_name)
+        self.render_rows()
+
+    def export_excel(self):
+        try:
+            rows = getattr(self, "display_rows", [])
+            if not rows:
+                raise RuntimeError("جدولی برای خروجی گرفتن وجود ندارد.")
+
+            headers = [
+                "نماد", "امتیاز تکنیکال", "RSI14", "امتیاز بنیادی", "امتیاز کل",
+                "سیگنال", "P/E بازار", "Forward P/E", "رشد سود خالص (%)",
+                "EPS گزارش‌شده", "EPS پیش‌بینی کدال", "P/E تقسیم بر رشد",
+                "قیمت مرجع ورود", "حد ضرر", "هدف ۱", "هدف ۲"
+            ]
+            keys = [
+                "symbol", "technical_score", "rsi14", "fundamental_score", "score",
+                "signal", "market_pe_api", "forward_pe_calculated",
+                "net_income_growth_pct", "eps_reported_net",
+                "forward_eps_estimate_codal", "pe_growth_ratio",
+                "entry_reference", "stop_loss_reference",
+                "target1_reference", "target2_reference"
+            ]
+
+            def xml_cell(value, row, col):
+                cell = f'<c r="{col}{row}"'
+                if value is None or value == "":
+                    return cell + '></c>'
+                if isinstance(value, (int, float)) and not isinstance(value, bool):
+                    return cell + f'><v>{value}</v></c>'
+                text = html.escape(str(value), quote=True)
+                return cell + ' t="inlineStr"><is><t xml:space="preserve">' + text + '</t></is></c>'
+
+            sheet_rows = []
+            sheet_rows.append('<row r="1">' + ''.join(
+                xml_cell(h, 1, chr(65+i) if i < 26 else "A"+chr(65+i-26))
+                for i, h in enumerate(headers)
+            ) + '</row>')
+
+            for rnum, item in enumerate(rows, start=2):
+                cells = []
+                for i, key in enumerate(keys):
+                    col = chr(65+i) if i < 26 else "A"+chr(65+i-26)
+                    cells.append(xml_cell(item.get(key), rnum, col))
+                sheet_rows.append(f'<row r="{rnum}">' + ''.join(cells) + '</row>')
+
+            sheet_xml = (
+                '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+                '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+                '<sheetData>' + ''.join(sheet_rows) + '</sheetData></worksheet>'
+            )
+
+            workbook = (
+                '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+                '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
+                'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+                '<sheets><sheet name="Ranking" sheetId="1" r:id="rId1"/></sheets></workbook>'
+            )
+            rels = (
+                '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+                '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+                '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>'
+                '</Relationships>'
+            )
+            content_types = (
+                '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+                '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+                '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
+                '<Default Extension="xml" ContentType="application/xml"/>'
+                '<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>'
+                '<Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>'
+                '</Types>'
+            )
+            root_rels = (
+                '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+                '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+                '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>'
+                '</Relationships>'
+            )
+
+            download_dir = Path("/storage/emulated/0/Download")
+            try:
+                download_dir.mkdir(parents=True, exist_ok=True)
+                testfile = download_dir / ".stock_agent_test"
+                testfile.write_text("test")
+                testfile.unlink()
+                destination = download_dir
+            except Exception:
+                destination = Path(self.base)
+
+            filename = "IranStockRanking_" + datetime.now().strftime("%Y%m%d_%H%M%S") + ".xlsx"
+            out = destination / filename
+            counter = 1
+            while out.exists():
+                out = destination / (filename[:-5] + f"_{counter}.xlsx")
+                counter += 1
+
+            with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
+                z.writestr("[Content_Types].xml", content_types)
+                z.writestr("_rels/.rels", root_rels)
+                z.writestr("xl/workbook.xml", workbook)
+                z.writestr("xl/_rels/workbook.xml.rels", rels)
+                z.writestr("xl/worksheets/sheet1.xml", sheet_xml)
+
+            msg = "فایل اکسل ذخیره شد:\n" + str(out)
+        except Exception as e:
+            msg = "خطا در خروجی اکسل:\n" + str(e)
+
+        popup = Popup(title=fa("خروجی Excel"),
+                      content=Label(text=msg, font_name=FONT_NAME),
+                      size_hint=(.90, .40))
+        popup.open()
 
     def _install_fonts(self):
         """Extract fonts from a ZIP data asset so p4a cannot omit/compile them."""
@@ -302,7 +459,7 @@ class IranStockApp(App):
             self.load_existing_results()
             if self.db.exists():
                 self.seed_ready = True
-                for button in (self.import_btn, self.update_btn, self.codal_btn, self.rank_btn):
+                for button in (self.import_btn, self.update_btn, self.rank_btn, self.export_btn):
                     button.disabled = False
 
     def confirm_restore(self):
@@ -495,6 +652,7 @@ class IranStockApp(App):
                 return (0, -value if desc else value)
             except Exception: return (1, 0.0)
         rows.sort(key=sortval)
+        self.display_rows = list(rows)
         for _, title in COLUMNS:
             self.table.add_widget(Label(text=fa(title), bold=True, size_hint_x=None, width=dp(148), color=(.25,.65,.95,1), font_name=FONT_NAME, halign="center", valign="middle", font_size="13sp"))
         for r in rows:
